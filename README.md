@@ -121,3 +121,5 @@ See `.env.example` for the full list. Key variables:
 ## License
 
 Private — All rights reserved.
+
+如果这个项目对你有帮助，请给一个 ⭐ Star！
