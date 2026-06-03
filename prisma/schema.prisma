@@ -1,0 +1,222 @@
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  extensions = []
+}
+
+// ============================================
+// Tenant (Multi-Tenancy)
+// ============================================
+model Tenant {
+  id          String   @id @default(uuid()) @db.Uuid
+  name        String   @db.VarChar(255)
+  slug        String   @unique @db.VarChar(100)
+  plan        String   @default("basic") @db.VarChar(50)
+  isActive    Boolean  @default(true)
+  settings    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  users        CustomerUser[]
+  conversations Conversation[]
+  knowledgeBases KnowledgeBase[]
+  complaintCases ComplaintCase[]
+  agentConfigs AgentConfig[]
+  products     Product[]
+  auditLogs    AuditLog[]
+
+  @@index([slug])
+}
+
+// ============================================
+// Customer Users (per tenant)
+// ============================================
+model CustomerUser {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  externalId  String?  @db.VarChar(255)
+  name        String   @db.VarChar(255)
+  email       String?  @db.VarChar(320)
+  phone       String?  @db.VarChar(50)
+  metadata    Json     @default("{}")
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant       Tenant        @relation(fields: [tenantId], references: [id])
+  conversations Conversation[]
+  memories     UserMemory[]
+
+  @@unique([tenantId, externalId])
+  @@index([tenantId, email])
+  @@index([tenantId, phone])
+}
+
+// ============================================
+// Conversations
+// ============================================
+model Conversation {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  userId    String   @db.Uuid
+  intent    String?  @db.VarChar(100)
+  subIntent String?  @db.VarChar(100)
+  status    String   @default("active") @db.VarChar(50)
+  channel   String   @default("web") @db.VarChar(50)
+  metadata  Json     @default("{}")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  closedAt  DateTime?
+
+  tenant  Tenant       @relation(fields: [tenantId], references: [id])
+  user    CustomerUser @relation(fields: [userId], references: [id])
+  messages Message[]
+
+  @@index([tenantId, userId])
+  @@index([tenantId, status])
+  @@index([tenantId, createdAt])
+}
+
+// ============================================
+// Messages
+// ============================================
+model Message {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @db.Uuid
+  role           String   @db.VarChar(50) // user | assistant | system | agent
+  agentType      String?  @db.VarChar(100) // intent_classifier | presale | aftersale | supervisor
+  content        String   @db.Text
+  metadata       Json     @default("{}")
+  createdAt      DateTime @default(now())
+
+  conversation Conversation @relation(fields: [conversationId], references: [id])
+
+  @@index([conversationId, createdAt])
+}
+
+// ============================================
+// Knowledge Base (per tenant, vector-enabled)
+// ============================================
+model KnowledgeBase {
+  id         String   @id @default(uuid()) @db.Uuid
+  tenantId   String   @db.Uuid
+  title      String   @db.VarChar(500)
+  content    String   @db.Text
+  category   String?  @db.VarChar(200)
+  embedding  Unsupported("vector(1024)")?
+  source     String?  @db.VarChar(500)
+  metadata   Json     @default("{}")
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, category])
+}
+
+// ============================================
+// Complaint Cases (per tenant, vector-enabled)
+// ============================================
+model ComplaintCase {
+  id          String   @id @default(uuid()) @db.Uuid
+  tenantId    String   @db.Uuid
+  title       String   @db.VarChar(500)
+  description String   @db.Text
+  category    String?  @db.VarChar(200)
+  severity    String   @default("medium") @db.VarChar(50)
+  resolution  String?  @db.Text
+  embedding   Unsupported("vector(1024)")?
+  imageUrls   String[] @default([])
+  metadata    Json     @default("{}")
+  resolvedAt  DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, category])
+  @@index([tenantId, severity])
+}
+
+// ============================================
+// Product Inventory (per tenant)
+// ============================================
+model Product {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  sku       String   @db.VarChar(100)
+  name      String   @db.VarChar(500)
+  description String? @db.Text
+  price     Decimal  @db.Decimal(12, 2)
+  stock     Int      @default(0)
+  category  String?  @db.VarChar(200)
+  imageUrls  String[] @default([])
+  attributes Json    @default("{}")
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, sku])
+  @@index([tenantId, category])
+}
+
+// ============================================
+// User Long-Term Memory
+// ============================================
+model UserMemory {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @db.Uuid
+  key       String   @db.VarChar(500)
+  value     Json
+  ttl       Int?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  user CustomerUser @relation(fields: [userId], references: [id])
+
+  @@unique([userId, key])
+}
+
+// ============================================
+// Agent Configuration (per tenant)
+// ============================================
+model AgentConfig {
+  id       String @id @default(uuid()) @db.Uuid
+  tenantId String @db.Uuid
+  agentName String @db.VarChar(100)
+  config   Json   @default("{}")
+  isActive Boolean @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@unique([tenantId, agentName])
+}
+
+// ============================================
+// Audit Log
+// ============================================
+model AuditLog {
+  id        String   @id @default(uuid()) @db.Uuid
+  tenantId  String   @db.Uuid
+  userId    String?  @db.Uuid
+  action    String   @db.VarChar(200)
+  resource  String   @db.VarChar(200)
+  resourceId String? @db.VarChar(100)
+  details   Json     @default("{}")
+  ipAddress String?  @db.VarChar(50)
+  createdAt DateTime @default(now())
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, createdAt])
+  @@index([tenantId, action])
+}
