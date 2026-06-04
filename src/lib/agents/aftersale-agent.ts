@@ -4,6 +4,7 @@ import { ComplaintService } from "@/lib/services/complaint-service";
 import { InventoryService } from "@/lib/services/inventory-service";
 import { LongTermMemory } from "@/lib/memory/long-term-memory";
 import { cvAdapter } from "@/lib/adapters/cv-adapter";
+import { ResponseGuard } from "@/lib/utils/response-guard";
 import type { AgentContext, AgentResult, AgentType } from "@/types";
 
 const AFTERSALE_SYSTEM_PROMPT = `你是一位名叫"小C"的售后客服专员。你真诚、有同理心、耐心细致，用温暖的话语化解客户的不满和焦虑。
@@ -134,12 +135,12 @@ export class AfterSaleAgent extends BaseAgent {
     const shouldEscalate = this.shouldEscalate(similarCases, ctx);
 
     const productContext = inventoryResult.products.length > 0
-      ? `\n\nRelated Product Info:\n${inventoryResult.products.map((p) => `- ${p.name} (SKU: ${p.sku}): ${p.stock} in stock, ¥${p.price}`).join("\n")}`
+      ? `\n\nRelated Product Info:\n${inventoryResult.products.map((p) => `- ${p.name} | 价格¥${p.price} | ${p.stock <= 0 ? "缺货" : p.stock <= 5 ? "库存紧张" : "有货"}`).join("\n")}`
       : "";
 
     const replyContent = content + productContext;
 
-    return {
+    const rawResult: AgentResult = {
       agentType: this.type,
       content: replyContent,
       metadata: {
@@ -157,6 +158,9 @@ export class AfterSaleAgent extends BaseAgent {
       nextAgent: shouldEscalate ? "supervisor" : undefined,
       shouldEscalate,
     };
+
+    const guarded = ResponseGuard.sanitizeAgentResult(rawResult);
+    return { ...rawResult, content: guarded.content, metadata: guarded.metadata };
   }
 
   private shouldEscalate(

@@ -4,6 +4,7 @@ import { RAGEngine } from "@/lib/rag/rag-engine";
 import { InventoryService } from "@/lib/services/inventory-service";
 import { LongTermMemory } from "@/lib/memory/long-term-memory";
 import { cvAdapter } from "@/lib/adapters/cv-adapter";
+import { ResponseGuard } from "@/lib/utils/response-guard";
 import type { AgentContext, AgentResult, AgentType } from "@/types";
 
 const PRESALE_SYSTEM_PROMPT = `你是一位名叫"小C"的电商客服专员。你真诚、细心、有耐心，说话温暖自然，就像一位乐于助人的朋友。
@@ -179,7 +180,7 @@ export class PresaleAgent extends BaseAgent {
       const cat = p.category ? ` [分类: ${p.category}]` : "";
       const matched = imageMatchedIds.has(p.id) ? " [图片匹配]" : "";
       const hasProductImages = (p.imageUrls && p.imageUrls.length > 0) ? " [有产品图]" : "";
-      productLines.push(`- ${p.name}${cat}${matched}${hasProductImages} | SKU:${p.sku} | 价格¥${p.price} | ${stockLabel}${desc}`);
+      productLines.push(`- ${p.name}${cat}${matched}${hasProductImages} | 价格¥${p.price} | ${stockLabel}${desc}`);
     }
 
     const productContext = products.length > 0
@@ -198,7 +199,7 @@ export class PresaleAgent extends BaseAgent {
       `【对话状态】${introHint}`,
       "",
       productContext,
-      imageAnalysis ? `\n【客户发送的图片分析】\n${imageAnalysis}\n${imageMatchedProducts.length > 0 ? `\n根据图片分析，我们库存中匹配到以下相关产品（已标注"[图片匹配]"）：\n${imageMatchedProducts.map((p) => `- ${p.name} | SKU:${p.sku}`).join("\n")}\n请优先向客户推荐这些匹配的产品。` : ""}\n客户发了产品图片，请结合图片中的产品信息主动询问客户的具体需求。比如：是想了解这款产品、想购买、还是有售后问题需要帮助？根据图片内容自然引导。` : "",
+      imageAnalysis ? `\n【客户发送的图片分析】\n${imageAnalysis}\n${imageMatchedProducts.length > 0 ? `\n根据图片分析，我们库存中匹配到以下相关产品（已标注"[图片匹配]"）：\n${imageMatchedProducts.map((p) => `- ${p.name}`).join("\n")}\n请优先向客户推荐这些匹配的产品。` : ""}\n客户发了产品图片，请结合图片中的产品信息主动询问客户的具体需求。比如：是想了解这款产品、想购买、还是有售后问题需要帮助？根据图片内容自然引导。` : "",
       knowledgeContext ? `\n【参考资料】\n${knowledgeContext.slice(0, 800)}` : "",
       "",
       "请用温暖、耐心的语气回复客户。记得先回应情绪或需求，再给方案，最后主动问是否需要更多帮助。",
@@ -224,12 +225,12 @@ export class PresaleAgent extends BaseAgent {
       id: p.id,
       type: "product" as const,
       title: p.name,
-      description: `¥${p.price} | ${p.stock > 0 ? `库存${p.stock}件` : "缺货"}`,
+      description: `¥${p.price} | ${p.stock <= 0 ? "缺货" : p.stock <= 5 ? "库存紧张" : "有货"}`,
       score: 1 - i * 0.2,
-      metadata: { sku: p.sku, category: p.category },
+      metadata: { category: p.category },
     }));
 
-    return {
+    const rawResult = {
       agentType: this.type,
       content,
       metadata: {
@@ -240,9 +241,13 @@ export class PresaleAgent extends BaseAgent {
         imageUrls: ctx.imageUrls ?? [],
         processingTime: 0,
       },
-      nextAgent: undefined,
+      nextAgent: undefined as AgentType | undefined,
       shouldEscalate: false,
     };
+
+    // Post-filter: strip any residual sensitive data from LLM output
+    const guarded = ResponseGuard.sanitizeAgentResult(rawResult);
+    return { ...rawResult, content: guarded.content, metadata: guarded.metadata };
   }
 }
 

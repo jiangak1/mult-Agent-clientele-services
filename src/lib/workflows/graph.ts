@@ -1,6 +1,7 @@
 import type { GraphState, GraphConfig, AgentType, ChatMessage, IntentResult, AgentResult } from "@/types";
 import { AgentRegistry } from "@/lib/agents/base-agent";
 import { prisma, withTenant } from "@/lib/auth/db-client";
+import { ResponseGuard } from "@/lib/utils/response-guard";
 
 // Import agents to trigger registration
 import "@/lib/agents";
@@ -334,18 +335,35 @@ export async function processMessage(
   };
 
   const graph = buildGraph();
-  const result = await graph.invoke(initialState);
+  let result = await graph.invoke(initialState);
 
-  // Save assistant messages
+  // Final output guard — strip sensitive data from the winning agent's output
   const lastResult = result.agentResults.get(result.currentAgent);
   if (lastResult) {
+    const guarded = ResponseGuard.sanitizeAgentResult(lastResult);
+
+    if (guarded.content !== lastResult.content) {
+      // Update the result so the caller gets sanitized output
+      const updated = new Map(result.agentResults);
+      updated.set(result.currentAgent, {
+        ...lastResult,
+        content: guarded.content,
+        metadata: guarded.metadata,
+      });
+      result = { ...result, agentResults: updated };
+    }
+  }
+
+  // Save assistant messages (sanitized)
+  const finalResult = result.agentResults.get(result.currentAgent);
+  if (finalResult) {
     await prisma.message.create({
       data: {
         conversationId: config.conversationId,
         role: "assistant",
         agentType: result.currentAgent,
-        content: lastResult.content,
-        metadata: lastResult.metadata as object,
+        content: finalResult.content,
+        metadata: finalResult.metadata as object,
       },
     });
   }
