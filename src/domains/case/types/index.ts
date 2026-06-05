@@ -1,122 +1,108 @@
 /**
- * Case Domain — Types
+ * Case Engine — Type Definitions
  *
- * Represents a support case (complaint/after-sale resolution record).
- * Extends the existing ComplaintCase model.
+ * PostgreSQL + pgvector backed. No Milvus dependency.
  */
-
-// ── Case Status ──────────────────────────────────────────
-
-export type CaseStatus =
-  | "open"
-  | "investigating"
-  | "resolved"
-  | "pending"
-  | "duplicate"
-  | "verified"
-  | "archived";
-
-export type CaseSeverity = "low" | "medium" | "high" | "critical";
-
-export type ResolutionType =
-  | "refund"
-  | "replacement"
-  | "repair"
-  | "compensation"
-  | "apology"
-  | "no_action"
-  | "information_only"
-  | "escalated_external";
 
 // ── Core Entity ──────────────────────────────────────────
 
-export interface SupportCase {
+export interface CaseRecord {
   id: string;
   tenantId: string;
-  ticketId: string | null;
-  title: string;
-  description: string;
+  productId: string | null;
+  issue: string;
+  solution: string;
   category: string | null;
-  subCategory: string | null;
   severity: CaseSeverity;
   status: CaseStatus;
-  imageUrls: string[];
-  assignedTo: string | null;
-  duplicateOf: string | null;
-  triagedAt: Date | null;
-  resolvedAt: Date | null;
-  verifiedAt: Date | null;
-  archivedAt: Date | null;
+  successRate: number;       // 0.0 - 1.0
+  satisfactionScore: number; // 1.0 - 5.0
+  resolutionCount: number;
+  feedbackCount: number;
+  embedding: number[] | null;
+  ticketId: string | null;
+  tags: string[];
+  metadata: Record<string, unknown>;
   createdAt: Date;
   updatedAt: Date;
 }
 
-// ── Case Outcome ─────────────────────────────────────────
+// ── Enums ────────────────────────────────────────────────
 
-export interface CaseOutcome {
-  id: string;
-  caseId: string;
-  resolution: string;
-  resolutionType: ResolutionType;
-  effortMinutes: number | null;
-  costAmount: number | null;
-  isAutomated: boolean;
-  agentType: string | null;
-  createdAt: Date;
-}
+export type CaseStatus = "open" | "resolved" | "verified" | "archived";
 
-// ── Case Feedback ────────────────────────────────────────
+export type CaseSeverity = "low" | "medium" | "high" | "critical";
 
-export interface CaseFeedback {
-  id: string;
-  caseId: string;
-  userId: string | null;
-  rating: number; // 1-5
-  nps: number | null; // 0-10
-  comment: string | null;
-  isResolved: boolean | null;
-  createdAt: Date;
-}
+export type ResolutionType =
+  | "refund" | "replacement" | "repair" | "compensation"
+  | "apology" | "information_only" | "escalated_external";
 
-// ── Case Template ────────────────────────────────────────
+// ── Create / Update ──────────────────────────────────────
 
-export interface CaseTemplate {
-  id: string;
+export interface CreateCaseInput {
   tenantId: string;
-  title: string;
-  description: string;
+  productId?: string;
+  issue: string;
   solution: string;
-  category: string | null;
-  useCount: number;
-  successRate: number | null;
-  avgRating: number | null;
-  avgEffortMin: number | null;
-  isActive: boolean;
+  category?: string;
+  severity?: CaseSeverity;
+  ticketId?: string;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
-// ── Case Match Result ────────────────────────────────────
-
-export interface CaseMatchResult {
-  case: SupportCase;
-  score: number;
-  matchDetails: {
-    vectorScore: number;
-    keywordScore: number;
-    categoryBoost: number;
-  };
-  outcome: CaseOutcome | null;
-  template: CaseTemplate | null;
+export interface UpdateCaseInput {
+  solution?: string;
+  category?: string;
+  severity?: CaseSeverity;
+  status?: CaseStatus;
+  successRate?: number;
+  satisfactionScore?: number;
+  tags?: string[];
+  metadata?: Record<string, unknown>;
 }
 
-// ── Search ───────────────────────────────────────────────
+export interface RecordFeedbackInput {
+  rating: number;            // 1-5
+  isResolved: boolean;
+  comment?: string;
+}
+
+// ── Match / Search ───────────────────────────────────────
 
 export interface CaseSearchParams {
   tenantId: string;
   query: string;
+  productId?: string;
   category?: string;
   severity?: CaseSeverity[];
   topK?: number;
   minScore?: number;
-  includeResolvedOnly?: boolean;
   matchMode?: "keyword" | "vector" | "hybrid";
+}
+
+export interface CaseMatchResult {
+  case: CaseRecord;
+  score: number;
+  matchDetails: {
+    vectorScore: number;
+    keywordScore: number;
+    qualityBoost: number;
+    finalScore: number;
+  };
+}
+
+export interface PaginatedResult<T> {
+  items: T[];
+  total: number;
+  page: number;
+  pageSize: number;
+  hasMore: boolean;
+}
+
+// ── Embedding ────────────────────────────────────────────
+
+export interface EmbeddingProvider {
+  embed(text: string): Promise<number[]>;
+  embedBatch(texts: string[]): Promise<number[][]>;
 }

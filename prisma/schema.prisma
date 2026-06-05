@@ -6,7 +6,7 @@ generator client {
 datasource db {
   provider   = "postgresql"
   url        = env("DATABASE_URL")
-  extensions = []
+  extensions = [vector, pg_trgm]
 }
 
 // ============================================
@@ -30,6 +30,7 @@ model Tenant {
   products     Product[]
   auditLogs    AuditLog[]
   orders        OrderCache[]
+  cases         Case[]
 
   @@index([slug])
 }
@@ -143,6 +144,38 @@ model ComplaintCase {
 
   @@index([tenantId, category])
   @@index([tenantId, severity])
+}
+
+// ============================================
+// Case Engine — knowledge base for resolved support cases
+// Uses pgvector for similarity search (NO Milvus dependency)
+// ============================================
+model Case {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenantId          String   @db.Uuid
+  productId         String?  @db.Uuid
+  issue             String   @db.Text
+  solution          String   @db.Text
+  category          String?  @db.VarChar(200)
+  severity          String   @default("medium") @db.VarChar(50)
+  status            String   @default("resolved") @db.VarChar(50)
+  successRate       Float    @default(0)
+  satisfactionScore Float    @default(0)
+  resolutionCount   Int      @default(0)
+  feedbackCount     Int      @default(0)
+  embedding         Unsupported("vector(1024)")?
+  ticketId          String?  @db.VarChar(100)
+  tags              String[] @default([])
+  metadata          Json     @default("{}")
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant Tenant @relation(fields: [tenantId], references: [id])
+
+  @@index([tenantId, category])
+  @@index([tenantId, status])
+  @@index([tenantId, successRate])
+  @@index([tenantId, productId])
 }
 
 // ============================================

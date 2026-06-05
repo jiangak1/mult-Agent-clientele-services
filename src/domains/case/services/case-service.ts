@@ -1,153 +1,151 @@
 /**
- * Case Service — Support case management + similarity search.
- * Delegates to existing ComplaintService + RAGEngine for backward compat.
+ * Case Engine Service — Central orchestrator.
+ *
+ * Coordinates CaseRepository + CaseMatcher + CaseRanker + embedding provider.
+ * All case operations MUST go through this service.
  */
 
 import { CaseRepository } from "../repositories/case-repository";
-import { KnowledgeRepository } from "../../knowledge/repositories/knowledge-repository";
-import { ComplaintService } from "@/lib/services/complaint-service";
+import { CaseMatcher } from "./case-matcher";
+import { CaseRanker } from "./case-ranker";
+import { createEmbedding } from "@/lib/vector-store/milvus-client";
 import type {
-  SupportCase,
+  CaseRecord,
   CaseSearchParams,
   CaseMatchResult,
+  CreateCaseInput,
+  UpdateCaseInput,
+  RecordFeedbackInput,
+  EmbeddingProvider,
+  PaginatedResult,
 } from "../types";
 
-export const CaseService = {
-  // ── CRUD ─────────────────────────────────────────────
+// ── Embedding Provider (delegates to existing createEmbedding) ──
 
-  async getCase(tenantId: string, caseId: string): Promise<SupportCase | null> {
+const embedProvider: EmbeddingProvider = {
+  async embed(text: string): Promise<number[]> {
+    return createEmbedding(text);
+  },
+  async embedBatch(texts: string[]): Promise<number[][]> {
+    const { createEmbeddings } = await import("@/lib/vector-store/milvus-client");
+    return createEmbeddings(texts);
+  },
+};
+
+// ── Service ───────────────────────────────────────────────
+
+export const CaseService = {
+  // ==========================================================
+  // CRUD
+  // ==========================================================
+
+  async getCase(tenantId: string, caseId: string): Promise<CaseRecord | null> {
     return CaseRepository.findById(tenantId, caseId);
   },
 
-  async getCasesByCategory(
-    tenantId: string,
-    category: string,
-    limit?: number,
-  ): Promise<SupportCase[]> {
-    return CaseRepository.findByCategory(tenantId, category, limit);
+  async createCase(input: CreateCaseInput): Promise<CaseRecord> {
+    const embedText = CaseMatcher.buildEmbeddingText(input.issue, input.solution);
+    const embedding = await embedProvider.embed(embedText);
+    return CaseRepository.create(input, embedding);
   },
 
-  async resolveCase(
+  async updateCase(
     tenantId: string,
     caseId: string,
-    resolution: string,
-  ): Promise<void> {
-    return CaseRepository.resolve(tenantId, caseId, resolution);
+    input: UpdateCaseInput,
+  ): Promise<boolean> {
+    // Recompute embedding if solution changed
+    let embedding: number[] | undefined;
+    if (input.solution) {
+      const existing = await CaseRepository.findById(tenantId, caseId);
+      const issue = existing?.issue ?? "";
+      const embedText = CaseMatcher.buildEmbeddingText(issue, input.solution);
+      embedding = await embedProvider.embed(embedText);
+    }
+    return CaseRepository.update(tenantId, caseId, input, embedding);
   },
 
-  // ── Similarity Search ────────────────────────────────
-
-  /**
-   * Search for similar historical cases.
-   * Delegates to existing ComplaintService for vector search.
-   */
-  async searchSimilar(params: CaseSearchParams): Promise<CaseMatchResult[]> {
-    const { tenantId, query, topK = 5, minScore = 0.6 } = params;
-
-    // Use existing service for the actual search
-    const similarCases = await ComplaintService.searchSimilarCases(
-      tenantId,
-      query,
-      topK,
-    );
-
-    // Enrich with additional data from the knowledge repo
-    const embedding = await KnowledgeRepository.embedText(query);
-
-    // Re-rank using pgvector for hybrid score
-    const pgResults = await CaseRepository.searchByVector(tenantId, embedding, topK * 2);
-    const pgScoreMap = new Map(pgResults.map((r) => [r.id, r.score]));
-
-    const results: CaseMatchResult[] = similarCases
-      .map((c) => {
-        const pgScore = pgScoreMap.get(c.id) ?? 0;
-        const vectorScore = Math.max(
-          pgScore > 0.6 ? pgScore : 0,
-          0.5, // floor from Milvus match
-        );
-        if (vectorScore < minScore) return null;
-
-        return {
-          case: {
-            id: c.id,
-            tenantId,
-            ticketId: null,
-            title: c.title,
-            description: c.description,
-            category: c.category,
-            subCategory: null,
-            severity: c.severity as SupportCase["severity"],
-            status: c.resolution ? "resolved" : "open",
-            imageUrls: c.imageUrls,
-            assignedTo: null,
-            duplicateOf: null,
-            triagedAt: null,
-            resolvedAt: c.createdAt, // approximate
-            verifiedAt: null,
-            archivedAt: null,
-            createdAt: c.createdAt,
-            updatedAt: c.createdAt,
-          },
-          score: vectorScore,
-          matchDetails: {
-            vectorScore,
-            keywordScore: 0,
-            categoryBoost: 1.0,
-          },
-          outcome: c.resolution
-            ? {
-                id: `outcome_${c.id}`,
-                caseId: c.id,
-                resolution: c.resolution,
-                resolutionType: "information_only",
-                effortMinutes: null,
-                costAmount: null,
-                isAutomated: false,
-                agentType: null,
-                createdAt: c.createdAt,
-              }
-            : null,
-          template: null,
-        };
-      })
-      .filter((r): r is CaseMatchResult => r !== null);
-
-    return results;
-  },
-
-  // ── Create (delegates to ComplaintService) ────────────
-
-  async createCase(
-    tenant: { tenantId: string; userId?: string },
-    data: {
-      title: string;
-      description: string;
-      category?: string;
-      severity?: string;
-      imageUrls?: string[];
-      resolution?: string;
-    },
-  ): Promise<SupportCase> {
-    const record = await ComplaintService.createCase(tenant, data);
+  async listCases(
+    tenantId: string,
+    options?: { category?: string; status?: string; productId?: string; page?: number; pageSize?: number },
+  ): Promise<PaginatedResult<CaseRecord>> {
+    const { rows, total } = await CaseRepository.list(tenantId, {
+      ...options,
+      status: options?.status as CaseRecord["status"] | undefined,
+    });
     return {
-      id: record.id,
-      tenantId: tenant.tenantId,
-      ticketId: null,
-      title: record.title,
-      description: record.description,
-      category: record.category,
-      subCategory: null,
-      severity: (record.severity as SupportCase["severity"]) ?? "medium",
-      status: record.resolution ? "resolved" : "open",
-      imageUrls: record.imageUrls,
-      assignedTo: null,
-      duplicateOf: null,
-      triagedAt: null,
-      resolvedAt: record.createdAt,
-      verifiedAt: null,
-      archivedAt: null,
-      createdAt: record.createdAt,
-      updatedAt: record.createdAt,
+      items: rows,
+      total,
+      page: options?.page ?? 1,
+      pageSize: options?.pageSize ?? 20,
+      hasMore: (options?.page ?? 1) * (options?.pageSize ?? 20) < total,
     };
+  },
+
+  // ==========================================================
+  // SEARCH — Matcher + Ranker
+  // ==========================================================
+
+  async searchSimilar(params: CaseSearchParams): Promise<CaseMatchResult[]> {
+    const embedText = CaseMatcher.buildEmbeddingText(params.query, "");
+    const embedding = await embedProvider.embed(embedText);
+
+    // Step 1: Match
+    const matched = await CaseMatcher.match(params, embedding, embedProvider);
+
+    // Step 2: Rank (quality + freshness)
+    const ranked = CaseRanker.rank(matched);
+
+    // Step 3: Diversify
+    return CaseRanker.diversify(ranked);
+  },
+
+  // ==========================================================
+  // FEEDBACK — Close the loop
+  // ==========================================================
+
+  async recordFeedback(
+    tenantId: string,
+    caseId: string,
+    input: RecordFeedbackInput,
+  ): Promise<boolean> {
+    if (input.rating < 1 || input.rating > 5) {
+      throw new Error("Rating must be 1-5");
+    }
+    return CaseRepository.recordFeedback(tenantId, caseId, input.rating, input.isResolved);
+  },
+
+  // ==========================================================
+  // EMBEDDING — Management
+  // ==========================================================
+
+  /** Recompute embedding for a case (e.g., after editing issue/solution). */
+  async recomputeEmbedding(tenantId: string, caseId: string): Promise<boolean> {
+    const existing = await CaseRepository.findById(tenantId, caseId);
+    if (!existing) return false;
+
+    const embedText = CaseMatcher.buildEmbeddingText(existing.issue, existing.solution);
+    const embedding = await embedProvider.embed(embedText);
+    await CaseRepository.updateEmbedding(caseId, embedding);
+    return true;
+  },
+
+  /** Batch recompute embeddings (e.g., after model upgrade). */
+  async batchRecomputeEmbeddings(tenantId: string, batchSize = 50): Promise<number> {
+    const { rows } = await CaseRepository.list(tenantId, { pageSize: 1000 });
+    let count = 0;
+
+    for (let i = 0; i < rows.length; i += batchSize) {
+      const batch = rows.slice(i, i + batchSize);
+      const embedTexts = batch.map((c) => CaseMatcher.buildEmbeddingText(c.issue, c.solution));
+      const embeddings = await embedProvider.embedBatch(embedTexts);
+
+      for (let j = 0; j < batch.length; j++) {
+        await CaseRepository.updateEmbedding(batch[j].id, embeddings[j]);
+        count++;
+      }
+    }
+
+    return count;
   },
 };
