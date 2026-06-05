@@ -1,0 +1,1 @@
+export { TaobaoAdapter } from "./adapter";
