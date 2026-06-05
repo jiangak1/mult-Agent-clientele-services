@@ -5,6 +5,7 @@
 
 import { TicketRepository } from "../repositories/ticket-repository";
 import { createConversation } from "@/lib/workflows/graph";
+import { OrderService } from "@/domains/order";
 import type {
   Ticket,
   TicketMessage,
@@ -12,6 +13,7 @@ import type {
   CreateTicketInput,
   AddMessageInput,
 } from "../types";
+import type { UnifiedOrder } from "@/domains/order";
 
 export const TicketService = {
   // ── Lifecycle ────────────────────────────────────────
@@ -68,5 +70,17 @@ export const TicketService = {
       channel: "web",
     });
     return ticket.id;
+  },
+
+  // ── Order Integration ────────────────────────────────
+
+  /** Link an order to this ticket. Delegates to OrderService. */
+  async linkOrder(ticketId: string, orderId: string): Promise<void> {
+    await OrderService.linkToConversation(ticketId, orderId);
+  },
+
+  /** Get all orders linked to this ticket. */
+  async getLinkedOrders(ticketId: string): Promise<UnifiedOrder[]> {
+    return OrderService.getOrdersForConversation(ticketId);
   },
 };

@@ -29,6 +29,7 @@ model Tenant {
   agentConfigs AgentConfig[]
   products     Product[]
   auditLogs    AuditLog[]
+  orders        OrderCache[]
 
   @@index([slug])
 }
@@ -75,6 +76,7 @@ model Conversation {
   tenant  Tenant       @relation(fields: [tenantId], references: [id])
   user    CustomerUser @relation(fields: [userId], references: [id])
   messages Message[]
+  orderLinks ConversationOrder[]
 
   @@index([tenantId, userId])
   @@index([tenantId, status])
@@ -162,6 +164,7 @@ model Product {
   updatedAt DateTime @updatedAt
 
   tenant Tenant @relation(fields: [tenantId], references: [id])
+  skuMappings PlatformSkuMapping[]
 
   @@unique([tenantId, sku])
   @@index([tenantId, category])
@@ -199,6 +202,135 @@ model AgentConfig {
   tenant Tenant @relation(fields: [tenantId], references: [id])
 
   @@unique([tenantId, agentName])
+}
+
+// ============================================
+// Order Cache — unified platform-independent order storage
+// ============================================
+model OrderCache {
+  id                String   @id @default(uuid()) @db.Uuid
+  tenantId          String   @db.Uuid
+  platform          String   @db.VarChar(50)
+  platformOrderId   String   @db.VarChar(100)
+  parentOrderId     String?  @db.VarChar(100)
+  status            String   @db.VarChar(50)
+  platformStatus    String   @db.VarChar(100)
+  totalAmount       Decimal  @db.Decimal(12, 2)
+  shippingFee       Decimal  @db.Decimal(10, 2) @default(0)
+  discountAmount    Decimal  @db.Decimal(10, 2) @default(0)
+  originalAmount    Decimal  @db.Decimal(12, 2) @default(0)
+  buyerNick         String?  @db.VarChar(255)
+  buyerNote         String?  @db.Text
+  receiverName      String?  @db.VarChar(100)
+  receiverPhoneHash String?  @db.VarChar(255)
+  receiverPhoneLast4 String? @db.VarChar(4)
+  receiverProvince  String?  @db.VarChar(100)
+  receiverCity      String?  @db.VarChar(100)
+  receiverDistrict  String?  @db.VarChar(100)
+  receiverAddress   String?  @db.Text
+  orderCreatedAt    DateTime
+  paidAt            DateTime?
+  shippedAt         DateTime?
+  deliveredAt       DateTime?
+  completedAt       DateTime?
+  cancelledAt       DateTime?
+  customerUserId    String?  @db.Uuid
+  platformData      Json     @default("{}")
+  lastSyncedAt      DateTime @default(now())
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  tenant          Tenant              @relation(fields: [tenantId], references: [id])
+  items           OrderItemCache[]
+  afterSales      AfterSaleCache[]
+  conversationLinks ConversationOrder[]
+
+  @@unique([tenantId, platform, platformOrderId])
+  @@index([tenantId, status])
+  @@index([tenantId, orderCreatedAt])
+  @@index([tenantId, receiverPhoneHash, receiverPhoneLast4])
+  @@index([tenantId, customerUserId])
+}
+
+// ============================================
+// Order Item Cache — line items for each order
+// ============================================
+model OrderItemCache {
+  id             String   @id @default(uuid()) @db.Uuid
+  orderId        String   @db.Uuid
+  platformSkuId  String   @db.VarChar(200)
+  platformItemId String   @db.VarChar(100)
+  title          String   @db.VarChar(500)
+  price          Decimal  @db.Decimal(12, 2)
+  quantity       Int
+  totalAmount    Decimal  @db.Decimal(12, 2)
+  skuAttributes  Json     @default("{}")
+  imageUrl       String?  @db.VarChar(1000)
+  outerSkuId     String?  @db.VarChar(100)
+  productId      String?  @db.Uuid
+
+  order          OrderCache @relation(fields: [orderId], references: [id])
+
+  @@index([orderId])
+  @@index([outerSkuId])
+  @@index([productId])
+}
+
+// ============================================
+// After-Sale Cache — refund/return/exchange records
+// ============================================
+model AfterSaleCache {
+  id                  String   @id @default(uuid()) @db.Uuid
+  tenantId            String   @db.Uuid
+  orderId             String   @db.Uuid
+  platform            String   @db.VarChar(50)
+  platformAfterSaleId String   @db.VarChar(100)
+  type                String   @db.VarChar(50)
+  status              String   @db.VarChar(50)
+  reason              String?  @db.Text
+  amount              Decimal  @db.Decimal(12, 2)
+  description         String?  @db.Text
+  platformData        Json     @default("{}")
+  afterSaleCreatedAt  DateTime
+  resolvedAt          DateTime?
+  lastSyncedAt        DateTime @default(now())
+
+  order               OrderCache @relation(fields: [orderId], references: [id])
+
+  @@unique([tenantId, platform, platformAfterSaleId])
+  @@index([orderId])
+  @@index([tenantId, status])
+}
+
+// ============================================
+// Conversation-Order Link — join table
+// ============================================
+model ConversationOrder {
+  id             String   @id @default(uuid()) @db.Uuid
+  conversationId String   @db.Uuid
+  orderId        String   @db.Uuid
+
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  order          OrderCache   @relation(fields: [orderId], references: [id])
+
+  @@unique([conversationId, orderId])
+}
+
+// ============================================
+// Platform SKU Mapping — maps external SKU to local Product
+// ============================================
+model PlatformSkuMapping {
+  id            String   @id @default(uuid()) @db.Uuid
+  tenantId      String   @db.Uuid
+  platform      String   @db.VarChar(50)
+  platformSkuId String   @db.VarChar(200)
+  productId     String   @db.Uuid
+  createdAt     DateTime @default(now())
+
+  product       Product @relation(fields: [productId], references: [id])
+
+  @@unique([tenantId, platform, platformSkuId])
+  @@index([productId])
 }
 
 // ============================================
